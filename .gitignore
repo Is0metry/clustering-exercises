@@ -1,0 +1,7 @@
+data/*
+env.py
+wip/*
+.DS_STORE*
+.vscode/*
+.pylintrc
+__pycache__/*
