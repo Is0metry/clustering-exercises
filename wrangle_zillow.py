@@ -1,6 +1,7 @@
 '''wrangle contains helper functions to assist in data acquisition and preparation
 in zillow.ipynb'''
-import os,re
+import os
+import re
 from typing import List, Tuple, Union
 
 import numpy as np
@@ -10,8 +11,41 @@ from sklearn.preprocessing import RobustScaler
 
 from env import get_db_url
 
-
-
+rename_dict = {
+    'parcelid':'parcel_id', 'basementsqft':'basement_sqft',
+    'bathroomcnt':'bath_count', 'bedroomcnt':'bed_count',
+       'calculatedbathnbr':'calc_bath_and_bed','finishedfloor1squarefeet':'finished_floor1_sqft',
+       'calculatedfinishedsquarefeet':'calc_sqft', 'finishedsquarefeet12':'finished_sqft12',
+       'finishedsquarefeet13':'finished_sqft13', 'finishedsquarefeet15':'finished_sqft15',
+        'finishedsquarefeet50':'finished_sqft50',
+       'finishedsquarefeet6':'finished_sqft6', 'fireplacecnt':'fireplace_cnt',
+        'fullbathcnt':'full_bath_cnt',
+       'garagecarcnt':'garage_car_count', 'garagetotalsqft':'garage_sqft',
+       'hashottuborspa':'has_hot_tub',
+        'lotsizesquarefeet':'lot_sqft', 'poolcnt':'pool_count', 'poolsizesum':'sum_pool_size',
+        'propertycountylandusecode':'property_county_use_code',
+        'propertyzoningdesc':'property_zoning_desc',
+       'rawcensustractandblock':'raw_census_tract_block', 'regionidcity':'region_id_city',
+        'regionidcounty':'region_id_county',
+       'regionidneighborhood':'region_id_neighbor', 'regionidzip':'region_id_zip',
+        'roomcnt':'room_count', 'threequarterbathnbr':'three_quarter_bath',
+       'unitcnt':'unit_count', 'yardbuildingsqft17':'yard_building_sqft17',
+        'yardbuildingsqft26':'yard_building_sqft26', 'yearbuilt':'year_built',
+       'numberofstories':'no_stories', 'fireplaceflag':'fireplace_flag',
+        'structuretaxvaluedollarcnt':'structure_tax_value',
+       'taxvaluedollarcnt':'tax_value', 'assessmentyear':'assessment_year',
+        'landtaxvaluedollarcnt':'land_value',
+       'taxamount':'tax_amount', 'taxdelinquencyflag':'tax_delinquency_flag',
+       'taxdelinquencyyear':'tax_delinquency_year',
+       'censustractandblock':'census_tract_and_block', 'logerror':'log_error',
+       'transactiondate':'transaction_date',
+       'airconditioningdesc':'air_conditioning_desc',
+       'architecturalstyledesc':'architectural_style_desc',
+       'buildingclassdesc':'building_class_desc',
+       'heatingorsystemdesc':'heating_system_desc', 'propertylandusedesc':'property_land_use_desc',
+        'storydesc':'story_desc',
+       'typeconstructiondesc':'type_construction_desc'
+}
 def get_zillow_from_sql() -> pd.DataFrame:
     '''
     reads MySQL data from `zillow` database and returns `pandas.DataFrame` with raw data from query
@@ -77,11 +111,11 @@ def wrangle_zillow(from_sql: bool = False, from_csv: bool = False) -> pd.DataFra
 
     return ret_df
 
-def prep_zillow(df:pd.DataFrame)->pd.DataFrame:
+def prep_zillow(df:pd.DataFrame,prop_row:float = .1, prop_col:float = .1)->pd.DataFrame:
     '''
     prepares `DataFrame` for processing
     ## Parameters
-    df: `pandas.DataFrame` with unfiltered values    
+    df: `pandas.DataFrame` with unfiltered values```
     ## Returns
     
     '''
@@ -90,9 +124,18 @@ def prep_zillow(df:pd.DataFrame)->pd.DataFrame:
     df = df.drop_duplicates(subset=['parcelid'],keep='last')
     cols_to_remove = ['id','id.1']
     for c in df.columns:
-        if re.match('.*typeid$',c) is not None:
+        if re.match('.*typeid',c) is not None:
             cols_to_remove.append(str(c))
     df = df.drop(columns=cols_to_remove)
+    df = df.rename(columns=rename_dict)
+    df = df.convert_dtypes()
+    df.fips = df.fips.astype('category')
+    df.transaction_date = pd.to_datetime(df.transaction_date)
+    df.property_land_use_desc = df.property_land_use_desc.astype('category')
+    df.property_land_use_desc = df.property_land_use_desc.cat.remove_categories(\
+        ['Duplex (2 Units, Any Combination)','Quadruplex (4 Units, Any Combination)',\
+        'Triplex (3 Units, Any Combination)','Commercial/Office/Residential Mixed Used']).dropna()
+    df = handle_missing_values(df,prop_row,prop_col).reset_index(drop=True)
     return df
 
 def tvt_split(dframe: pd.DataFrame, stratify: Union[str, None] = None,
@@ -156,19 +199,34 @@ def scale_data(train: pd.DataFrame, validate: pd.DataFrame, test: pd.DataFrame,
     return ret_train, ret_valid, ret_test
   
 def handle_null_cols(df:pd.DataFrame,pct_col:float)-> pd.DataFrame:
-    prop_pct = 1-pct_col
+    pct_col = 1-pct_col
     na_sums = pd.DataFrame(df.isna().sum())
     na_sums = na_sums.reset_index().rename(columns={0:'n_nulls'})
     na_sums['percentage'] =  na_sums.n_nulls / df.shape[0]
-    ret_indices = na_sums[na_sums.percentage <= prop_pct]['index'].to_list()
+    ret_indices = na_sums[na_sums.percentage <= pct_col]['index'].to_list()
     return df[ret_indices]
 
 def handle_null_rows(df:pd.DataFrame, pct_row:float)->pd.DataFrame:
-    return df[df.isna().sum(axis=1)/df.shape[1] >= pct_row]
+    pct_row = 1-pct_row
+    return df[df.isna().sum(axis=1)/df.shape[1] <= pct_row]
 
 
 def handle_missing_values(df:pd.DataFrame, pct_row:float,pct_col:float)->pd.DataFrame:
-    return handle_null_rows(handle_null_cols(df,pct_col),pct_row)
+    df = handle_null_cols(df,pct_col)
+    return handle_null_rows(df,pct_row)
+
+def mark_outliers(df:pd.DataFrame,s:str,k:float=1.5)->pd.DataFrame:
+    q1,q3 = df[s].quantile([.25,.75])
+    iqr = q3-q1
+    mean = df[s].mean()
+    lower = mean - (q1 - k * iqr)
+    upper = mean + (q3 + k * iqr)
+    df[s].mean()
+    normals = df[(df[s] >= lower) & (df[s] <=upper)]
+    df['outliers'] = True
+    df.loc[normals.index,'outliers'] = False
+    return df
 if __name__ == "__main__":
     df = wrangle_zillow()
-    print(df.info())
+    df = prep_zillow(df)
+    print(df.columns)

@@ -5,3 +5,4 @@ wip/*
 .vscode/*
 .pylintrc
 __pycache__/*
+warmup.ipynb
